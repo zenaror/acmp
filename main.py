@@ -78,7 +78,7 @@ def timing(
 
 
 # process for handling audio
-def audio(conn, game):
+def audio(conn, game, vol):
     DIR_PATH = os.path.dirname(os.path.realpath(__file__))
 
     # start with silence to initialize objects before loop
@@ -92,7 +92,7 @@ def audio(conn, game):
         file
     ])
 
-    volume = "volume=0.3"
+    volume = f"volume={vol}"
 
     while True:
         # check for new message
@@ -138,6 +138,7 @@ def main():
     parser.add_argument("--game", dest="game", required=False, help=f'The valid game options are: {", ".join(games)}.')
     parser.add_argument("--lat", dest="lat", required=True)
     parser.add_argument("--lon", dest="lon", required=True)
+    parser.add_argument("--volume", dest="vol", required=False)
     args = parser.parse_args()
 
     if not args.lat or not args.lon:
@@ -155,14 +156,14 @@ def main():
     else:
         game = args.game
 
-    
+    vol_dec = f"{int(args.vol) / 100:.2f}"
 
     # creating a pipe to communicate between processes
     parent_conn, child_conn = multiprocessing.Pipe()
 
     # creating processes
     timing_process = multiprocessing.Process(target=timing, args=(child_conn, game, lat, lon))
-    audio_process = multiprocessing.Process(target=audio, args=(parent_conn, game))
+    audio_process = multiprocessing.Process(target=audio, args=(parent_conn, game, vol_dec))
 
     # be sure to kill processes if keyboard interrupted
     try:
