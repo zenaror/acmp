@@ -3,6 +3,7 @@
 # mjdargen@gmail.com
 # https://dargen.io
 # https://github.com/mjdargen
+import sys
 import os
 import time
 import requests
@@ -10,30 +11,38 @@ import datetime
 import argparse
 import multiprocessing
 from dotenv import load_dotenv
-from pydub import AudioSegment
-from pydub.playback import _play_with_simpleaudio
-
-
-# gets location (lat/lon) based on IP address
-def get_location():
-    url = "http://ipinfo.io/json"
-    r = requests.get(url)
-    data = r.json()
-    return data["loc"].split(",")
-
+# from pydub import AudioSegment
+# from pydub.playback import _play_with_simpleaudio
+import subprocess
 
 # gets weather based on lat/lon
-# go to https://openweathermap.org/api to register for free API key
-# add to .env file like this: WEATHER_KEY=<your_api_key_here>
 def get_weather(lat, lon):
-    key = os.getenv("WEATHER_KEY")
-    url = f"http://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={key}"
+    url = (
+        "https://api.open-meteo.com/v1/forecast"
+        f"?latitude={lat}&longitude={lon}&current=weather_code"
+    )
+
     r = requests.get(url)
     data = r.json()
 
-    if "rain" in data["weather"][0]["main"].lower():
+    code = data["current"]["weather_code"]
+
+    raining_codes = {
+        51, 53, 55, 56, 57,
+        61, 63, 65, 66, 67,
+        80, 81, 82,
+        95, 96, 99
+    }
+
+    snowing_codes = {
+        71, 73, 75,
+        77,
+        85, 86
+    }
+
+    if code in raining_codes:
         return "raining"
-    elif "snow" in data["weather"][0]["main"].lower():
+    elif code in snowing_codes:
         return "snowing"
     else:
         return "sunny"
@@ -41,12 +50,10 @@ def get_weather(lat, lon):
 
 # process for handling timeing to switch over
 def timing(
-    conn,
+    conn, game, lat, lon
 ):
     prev = None
     while True:
-        # get location
-        lat, lon = get_location()
         # get weather
         weather = get_weather(lat, lon)
         # get current time
@@ -55,7 +62,11 @@ def timing(
             now = now[1:]
         # send message with time and date
         if prev != now:
-            conn.send(f"{now}_{weather}")
+            if game == "animal-crossing" and weather=="raining":
+                conn.send(f"{weather}")
+            else:
+                conn.send(f"{now}_{weather}")
+                
             prev = now
 
         # compute how long to sleep for
@@ -71,26 +82,50 @@ def audio(conn, game):
     DIR_PATH = os.path.dirname(os.path.realpath(__file__))
 
     # start with silence to initialize objects before loop
-    file = f"{DIR_PATH}/silence.mp3"
-    clip = AudioSegment.from_mp3(file)
-    playback = _play_with_simpleaudio(clip)
+    file = os.path.join(DIR_PATH, "silence.mp3")
+
+    playback = subprocess.Popen([
+        "ffplay",
+        "-nodisp",
+        "-autoexit",
+        "-loglevel", "quiet",
+        file
+    ])
+
+    volume = "volume=0.3"
 
     while True:
         # check for new message
         if conn.poll():
             name = conn.recv()
             print(f"Switching to {name}.")
-            file = f"{DIR_PATH}/{game}/{name}.mp3"
-            # stop old song and play new one
-            playback.stop()
-            clip = AudioSegment.from_mp3(file)
-            playback = _play_with_simpleaudio(clip)
+            file = os.path.join(DIR_PATH, game, f"{name}.mp3")
+
+            # stop old song
+            if playback and playback.poll() is None:
+                playback.terminate()
+
+            # play new song
+            playback = subprocess.Popen([
+                "ffplay",
+                "-nodisp",
+                "-autoexit",
+                "-loglevel", "quiet",
+                "-af", volume,
+                file
+            ])
+
         # song finished, repeat
-        if not playback.is_playing():
-            # stop old song and play new one
-            playback.stop()
-            clip = AudioSegment.from_mp3(file)
-            playback = _play_with_simpleaudio(clip)
+        if playback.poll() is not None:
+            playback = subprocess.Popen([
+                "ffplay",
+                "-nodisp",
+                "-autoexit",
+                "-loglevel", "quiet",
+                "-af", volume,
+                file
+            ])
+
         time.sleep(2)
 
 
@@ -101,7 +136,17 @@ def main():
     games = ["new-horizons", "new-leaf", "wild-world", "animal-crossing"]
     parser = argparse.ArgumentParser(description="Animal Crossing Music Player")
     parser.add_argument("--game", dest="game", required=False, help=f'The valid game options are: {", ".join(games)}.')
+    parser.add_argument("--lat", dest="lat", required=True)
+    parser.add_argument("--lon", dest="lon", required=True)
     args = parser.parse_args()
+
+    if not args.lat or not args.lon:
+        print("lat and lon are required")
+        sys.exit(1)
+
+    lat = str(args.lat)
+    lon = str(args.lon)
+
     if not args.game:
         game = "new-horizons"
     elif args.game not in games:
@@ -110,11 +155,13 @@ def main():
     else:
         game = args.game
 
+    
+
     # creating a pipe to communicate between processes
     parent_conn, child_conn = multiprocessing.Pipe()
 
     # creating processes
-    timing_process = multiprocessing.Process(target=timing, args=(child_conn,))
+    timing_process = multiprocessing.Process(target=timing, args=(child_conn, game, lat, lon))
     audio_process = multiprocessing.Process(target=audio, args=(parent_conn, game))
 
     # be sure to kill processes if keyboard interrupted
